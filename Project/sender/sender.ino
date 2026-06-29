@@ -44,6 +44,7 @@ RouteEntry route = { DEST_ID, 0, {0,0}, 0, 0, false };
 uint8_t  pathIdCounter = 0;
 uint8_t  sampleCounter = 0;
 bool     dataPending   = false;
+uint8_t  rreqRetryCount = 0;      // RREQ 当前路径重试计数
 
 enum DiscState { IDLE, WAITING_RREP, WAITING_ACK };
 DiscState discState    = IDLE;
@@ -53,6 +54,7 @@ uint32_t  lastAction   = 0;       // 全局，ACK 后重置用
 const uint32_t RREP_TIMEOUT   = 2000;
 const uint32_t ACK_TIMEOUT    = 3500;  // >= mainTerm 的 3×800ms + 回程余量
 const uint32_t ROUTE_MAX_AGE  = 10000;  // 10 秒路由老化（每轮 ACK 后主动清掉）
+const uint8_t  MAX_RREQ_RETRIES = 3;    // RREQ 最多重试次数（同一路径连续失败才视作不可达）
 
 // =============================================
 void setup() {
@@ -83,6 +85,7 @@ void loop() {
   if (discState == IDLE) {
     if (now - lastAction >= 10000) {
       lastAction = now;
+      rreqRetryCount = 0;  // ★ 新周期开始，重置重试计数
 
       if (!route.valid || (now - route.timestamp > ROUTE_MAX_AGE)) {
         Serial.print(F("\n->RREQ #"));
@@ -107,8 +110,23 @@ void loop() {
   }
   else if (discState == WAITING_RREP) {
     if (now - rreqSendTime > RREP_TIMEOUT) {
-      discState = IDLE;
-      Serial.println(F("RREP timeout"));
+      if (rreqRetryCount < MAX_RREQ_RETRIES) {
+        // ★ 撞包导致 RREQ/RREP 丢失 → 递增退避重试
+        rreqRetryCount++;
+        Serial.print(F("RREP timeout retry #"));
+        Serial.print(rreqRetryCount, DEC);
+        Serial.print(F("/"));
+        Serial.println(MAX_RREQ_RETRIES, DEC);
+        delay(60 + rreqRetryCount * 120);  // 退避: 180ms, 300ms, 420ms（避开撞包窗口）
+        sendRREQ();
+      } else {
+        // ★ 连续多次失败 → 该路径不可达
+        discState = IDLE;
+        rreqRetryCount = 0;
+        route.valid = false;
+        lastAction = now;
+        Serial.println(F("RREP timeout (max retries) — path unreachable"));
+      }
     }
   }
   else if (discState == WAITING_ACK) {
@@ -190,6 +208,8 @@ void handleRREPFrame(LoRaFrame* frame) {
     Serial.print(discState, DEC);
     Serial.println(F(" accept"));
   }
+
+  rreqRetryCount = 0;  // ★ RREP 成功收到，重置重试计数
 
   route.destId     = frame->srcId;
   route.relayCount = frame->count;

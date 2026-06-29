@@ -543,22 +543,35 @@ async def simulate_traffic():
 
 # ════════════════════ 定时推送 ════════════════════
 ACK_TIMEOUT_SEC = 4.0  # ACK 阶段超过此时间未收到 ACK_CONFIRM 视为失败
+# ★ 各阶段超时阈值（秒）— 卡在任何阶段过久均视作传输失败
+PHASE_TIMEOUTS = {
+    "rreq": 6.0,   # RREQ: sender 最多 3 次重试 × 2s + 退避 ≈ 7s，6s 起检
+    "rrep": 5.0,   # RREP: 正常 <1s，超过 5s 异常
+    "data": 5.0,   # DATA: 正常 <1s，超过 5s 异常
+    "ack":  4.0,   # ACK: 3 次重传 × 800ms ≈ 2.4s，4s 起检
+}
 async def periodic_stats():
     while True:
         await asyncio.sleep(3)
         try: await manager.broadcast_stats()
         except Exception: pass
-        # ACK 超时检测：ACK 发出后 4 秒内未收到 ACK_CONFIRM → 路由失效
-        if stats.current_phase == "ack" and time.time() - stats.phase_updated > ACK_TIMEOUT_SEC:
-            route_info = stats.current_route or {}
-            await manager.broadcast(json.dumps({
-                "type": "route_fail",
-                "pathId": route_info.get("pathId", 0),
-                "relays": route_info.get("relays", []),
-                "msg": "ACK 超时 — 未收到确认回执"
-            }))
-            stats.current_phase = "ack_fail"   # 保持告警状态，直到下轮 RREQ 重置
-            stats.phase_updated = time.time()
+        # ★ 各阶段超时检测：卡在任何阶段过久均视作传输失败
+        phase = stats.current_phase
+        if phase in PHASE_TIMEOUTS:
+            elapsed = time.time() - stats.phase_updated
+            if elapsed > PHASE_TIMEOUTS[phase]:
+                route_info = stats.current_route or {}
+                phase_names = {"rreq":"路由发现","rrep":"路由应答","data":"数据传输","ack":"确认应答"}
+                cn_name = phase_names.get(phase, phase)
+                await manager.broadcast(json.dumps({
+                    "type": "phase_timeout",
+                    "phase": phase,
+                    "pathId": route_info.get("pathId", 0),
+                    "relays": route_info.get("relays", []),
+                    "msg": f"{cn_name}({phase}) 阶段超时 — 传输失败"
+                }))
+                stats.current_phase = f"{phase}_fail"  # 保持告警状态，直到下轮 RREQ 重置
+                stats.phase_updated = time.time()
 
 @app.on_event("startup")
 async def on_startup():
