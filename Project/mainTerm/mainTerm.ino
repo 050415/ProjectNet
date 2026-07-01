@@ -432,7 +432,10 @@ void handlePacket() {
 
   // ★ 将帧转发给 PC UI（ACK_CONFIRM 由 sendACK 转发，此处跳过避免重复）
   // ★ 清除踢出中继的数据，避免前端拓扑显示已被踢出的中继
-  if (rx->msgType != MSG_ACK_CONFIRM) {
+  if (rx->msgType != MSG_ACK_CONFIRM
+      && rx->msgType != MSG_CMD_PREPARE
+      && rx->msgType != MSG_CMD_COMMIT
+      && rx->msgType != MSG_CMD_READY) {
     uint8_t fwd[FRAME_SIZE];
     memcpy(fwd, raw, FRAME_SIZE);
     if (rx->count < 4) fwd[14] = (uint8_t)(int8_t)rssi;
@@ -566,8 +569,6 @@ void handleReady(LoRaFrame* rx, int8_t rssi) {
     else if (srcId == 0x22) readyNodesMask |= 0x02;
     else if (srcId == 0x30) readyNodesMask |= 0x04;
 
-    // 转发 READY 帧给 PC（UI 显示进度）
-    Serial.write((uint8_t*)rx, FRAME_SIZE);
 
     // 收齐所有已知在线节点 → 立即发 COMMIT
     if ((readyNodesMask & READY_MASK_ALL) == READY_MASK_ALL) {
